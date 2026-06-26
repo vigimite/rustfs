@@ -211,6 +211,17 @@ fn list_metadata_resolution_params(bucket: String, listing_quorum: usize, versio
     resolver
 }
 
+fn should_skip_walkdir_total_timeout(per_disk_limit: i32) -> bool {
+    per_disk_limit > 0
+}
+
+fn bounded_walk_per_disk_limit(limit: usize) -> i32 {
+    match i32::try_from(limit) {
+        Ok(limit) => limit,
+        Err(_) => i32::MAX,
+    }
+}
+
 fn parse_version_marker(marker: String) -> Result<VersionMarker> {
     Ok(VersionMarker::parse(marker)?)
 }
@@ -965,6 +976,7 @@ impl ECStore {
 
                     let tx1 = sender.clone();
                     let tx2 = sender.clone();
+                    let per_disk_limit = bounded_walk_per_disk_limit(opts.limit);
 
                     list_path_raw(
                         rx_clone,
@@ -977,7 +989,8 @@ impl ECStore {
                             filter_prefix: Some(filter_prefix),
                             forward_to: opts.marker.clone(),
                             min_disks: listing_quorum,
-                            per_disk_limit: opts.limit as i32,
+                            per_disk_limit,
+                            skip_walkdir_total_timeout: should_skip_walkdir_total_timeout(per_disk_limit),
                             agreed: Some(Box::new(move |entry: MetaCacheEntry| {
                                 Box::pin({
                                     let value = tx1.clone();
@@ -2020,6 +2033,7 @@ impl Sets {
 
                 let tx1 = sender.clone();
                 let tx2 = sender.clone();
+                let per_disk_limit = bounded_walk_per_disk_limit(opts.limit);
 
                 list_path_raw(
                     rx_clone,
@@ -2032,7 +2046,8 @@ impl Sets {
                         filter_prefix: Some(filter_prefix),
                         forward_to: opts.marker.clone(),
                         min_disks: listing_quorum,
-                        per_disk_limit: opts.limit as i32,
+                        per_disk_limit,
+                        skip_walkdir_total_timeout: should_skip_walkdir_total_timeout(per_disk_limit),
                         agreed: Some(Box::new(move |entry: MetaCacheEntry| {
                             Box::pin({
                                 let value = tx1.clone();
@@ -2844,6 +2859,7 @@ impl SetDisks {
                 forward_to: opts.marker,
                 min_disks: listing_quorum,
                 per_disk_limit: limit,
+                skip_walkdir_total_timeout: should_skip_walkdir_total_timeout(limit),
                 agreed: Some(Box::new(move |entry: MetaCacheEntry| {
                     Box::pin({
                         let value = tx1.clone();
@@ -2943,9 +2959,9 @@ fn calc_common_counter(infos: &[DiskInfo], read_quorum: usize) -> u64 {
 #[cfg(test)]
 mod test {
     use super::{
-        ENV_API_LIST_QUORUM, ListPathOptions, MAX_OBJECT_LIST, VersionMarker, gather_results, list_metadata_resolution_params,
-        list_quorum_from_env, max_keys_plus_one, merge_entry_channels, normalize_list_quorum, parse_version_marker,
-        version_marker_for_entries, walk_result_from_set_errors,
+        ENV_API_LIST_QUORUM, ListPathOptions, MAX_OBJECT_LIST, VersionMarker, bounded_walk_per_disk_limit, gather_results,
+        list_metadata_resolution_params, list_quorum_from_env, max_keys_plus_one, merge_entry_channels, normalize_list_quorum,
+        parse_version_marker, should_skip_walkdir_total_timeout, version_marker_for_entries, walk_result_from_set_errors,
     };
     use crate::error::StorageError;
     use rustfs_filemeta::{MetaCacheEntries, MetaCacheEntriesSorted, MetaCacheEntry};
@@ -3171,6 +3187,24 @@ mod test {
         assert_eq!(resolver.obj_quorum, 3);
         assert_eq!(resolver.bucket, "bucket");
         assert_eq!(resolver.requested_versions, 0);
+    }
+
+    #[test]
+    fn bounded_walk_skips_total_timeout() {
+        assert!(should_skip_walkdir_total_timeout(1));
+        assert!(should_skip_walkdir_total_timeout(10_000));
+    }
+
+    #[test]
+    fn unbounded_walk_keeps_total_timeout() {
+        assert!(!should_skip_walkdir_total_timeout(0));
+        assert!(!should_skip_walkdir_total_timeout(-1));
+    }
+
+    #[test]
+    fn walk_per_disk_limit_saturates_to_i32_max() {
+        assert_eq!(bounded_walk_per_disk_limit(10_000), 10_000);
+        assert_eq!(bounded_walk_per_disk_limit(usize::MAX), i32::MAX);
     }
 
     #[test]
